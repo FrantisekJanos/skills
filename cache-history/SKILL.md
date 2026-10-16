@@ -15,7 +15,7 @@ Skript `scripts/cache_history.py` projde lokální přepisy Claude Code (`~/.cla
    ```
    python -I "<adresář tohoto skillu>/scripts/cache_history.py" 30
    ```
-   Číslo je počet dní zpět, výchozí 30. Na Windows může být `python` místo `python3` a naopak.
+   Číslo je počet dní zpět, výchozí 30. Období v hodinách se zadá s `h`, např. `6h`. Na Windows může být `python` místo `python3` a naopak.
 2. Výstup ukaž celý, obě tabulky i podklady.
 3. Zjisti, jestli je v `~/.claude/settings.json` nastavené `subagentPromptCacheTtl`.
 4. Pod tabulky napiš výklad podle sekce Jak číst výsledky: 2–4 věty o tom, co z čísel plyne pro tohoto uživatele.

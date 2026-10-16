@@ -1,6 +1,6 @@
 """Hospodaření s prompt cache v Claude Code podle lokálních přepisů (~/.claude/projects).
 
-Použití: python -I cache_history.py [počet_dní]   (výchozí 30)
+Použití: python -I cache_history.py [období]   (výchozí 30 = dní; "6h" = hodin)
 Čte jen lokální soubory, nic neposílá. Vypíše dvě tabulky v Markdownu:
   1. přehled spotřeby (váha čtení z cache 0,1 = Sonnet/Haiku),
   2. podíl obnovy cache na spotřebě (váha čtení 0,05 = Opus 5.x).
@@ -14,8 +14,14 @@ except Exception:
     pass
 
 ROOT = os.path.expanduser("~/.claude/projects")
-DAYS = int(sys.argv[1]) if len(sys.argv) > 1 else 30
-SINCE = datetime.now(timezone.utc) - timedelta(days=DAYS)
+ARG = sys.argv[1].strip().lower() if len(sys.argv) > 1 else "30"
+if ARG.endswith("h"):
+    SPAN = timedelta(hours=float(ARG[:-1].replace(",", ".")))
+    LABEL = f"{ARG[:-1]} h"
+else:
+    SPAN = timedelta(days=float(ARG.rstrip("d").replace(",", ".")))
+    LABEL = f"{ARG.rstrip('d')} dní"
+SINCE = datetime.now(timezone.utc) - SPAN
 # Váhy vůči ceně neuloženého vstupu: zápis 5min cache 1,25, 1h cache 2, výstup 5.
 BASE = dict(inp=1.0, w5=1.25, w1=2.0, out=5.0)
 MIN_CTX = 20000  # menší kontext se za výpadek nepočítá
@@ -59,7 +65,7 @@ for f in glob.glob(os.path.join(ROOT, "**", "*.jsonl"), recursive=True):
         streams.append((kind, sorted(calls.values(), key=lambda c: c["t"])))
 
 if not streams:
-    print(f"V {ROOT} nejsou za posledních {DAYS} dní žádné přepisy s údaji o tokenech.")
+    print(f"V {ROOT} nejsou za posledních {LABEL} žádné přepisy s údaji o tokenech.")
     sys.exit(0)
 
 raw = collections.Counter()          # (kind, pole) -> tokeny
@@ -114,7 +120,7 @@ b = evaluate(0.05)
 reads = raw[("main", "rd")] + raw[("sub", "rd")]
 n_calls = sum(len(c) for _, c in streams)
 
-print(f"## Hospodaření s cache za posledních {DAYS} dní\n")
+print(f"## Hospodaření s cache za posledních {LABEL}\n")
 print(f"Hlavních sessions {n_streams['main']}, subagentů {n_streams['sub']}, "
       f"volání modelu {str(n_calls) if n_calls < 1000 else f'{n_calls:,}'.replace(',', ' ')}.")
 print("Jednotka M = milion tokenů přepočtených na cenu neuloženého vstupu.\n")
