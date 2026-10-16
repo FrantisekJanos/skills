@@ -85,15 +85,46 @@ for f in glob.glob(os.path.join(ROOT, "**", "*.jsonl"), recursive=True):
             if not cc:
                 w5 = u.get("cache_creation_input_tokens", 0) or 0
             key = m.get("id") or d.get("requestId") or d.get("uuid")
+            vis = 0  # viditelný výstup ve znacích (text + vstupy nástrojů); thinking bývá skryté
+            for blk in m.get("content") or []:
+                if blk.get("type") == "text":
+                    vis += len(blk.get("text", ""))
+                elif blk.get("type") == "tool_use":
+                    vis += len(json.dumps(blk.get("input", {}), ensure_ascii=False))
+            old = calls.get(key)
             calls[key] = dict(t=t, inp=u.get("input_tokens", 0) or 0, w5=w5, w1=w1,
                               rd=u.get("cache_read_input_tokens", 0) or 0,
-                              out=u.get("output_tokens", 0) or 0, model=m.get("model"))
+                              out=max(u.get("output_tokens", 0) or 0, old["out"] if old else 0),
+                              model=m.get("model"), vis=vis + (old["vis"] if old else 0),
+                              stop=m.get("stop_reason") or (old["stop"] if old else None),
+                              ver=d.get("version"))
     if calls:
         streams.append((kind, sorted(calls.values(), key=lambda c: c["t"])))
 
 if not streams:
     print(f"V {ROOT} nejsou ({LABEL}) žádné přepisy s údaji o tokenech.")
     sys.exit(0)
+
+# Některé verze Claude Code (např. 2.1.296) zapisují output_tokens ze začátku streamu
+# (zpráva bez stop_reason, pár tokenů). Takový výstup se odhadne z viditelného obsahu
+# poměrem tokenů na znak z korektně zapsaných volání (zahrnuje i skryté thinking).
+ok_out = ok_vis = 0
+for _, calls in streams:
+    for c in calls:
+        if c["stop"] and c["vis"]:
+            ok_out += c["out"]
+            ok_vis += c["vis"]
+TOK_PER_CHAR = ok_out / ok_vis if ok_vis else 0.3
+fixed = collections.Counter()
+for _, calls in streams:
+    for c in calls:
+        if not c["stop"]:
+            est = c["vis"] * TOK_PER_CHAR
+            if est > c["out"]:
+                fixed["n"] += 1
+                fixed["added"] += est - c["out"]
+                fixed[("ver", c["ver"])] += 1
+                c["out"] = est
 
 # Útrata po položkách: cost[(položka, kind)], tokeny tok[(položka, kind)]
 cost = collections.Counter()
@@ -199,6 +230,15 @@ out_t = both(tok, "out")
 print(f"Průměrné volání modelu: vstup {n((TT - out_t) / max(1, total_calls))} tokenů, "
       f"výstup {n(out_t / max(1, total_calls))}. Model dostane při každém volání celou dosavadní "
       "konverzaci znovu, ale vypíše jen novou odpověď. Proto je vstupu o dva řády víc.\n")
+if fixed["n"]:
+    vl = sorted({k[1] for k in fixed if isinstance(k, tuple) and k[1]},
+                key=lambda v: [int(x) if x.isdigit() else 0 for x in v.split(".")])
+    vers = (vl[0] if len(vl) == 1 else f"{vl[0]} až {vl[-1]}") if vl else "?"
+    ratio = f"{TOK_PER_CHAR:.2f}".replace(".", ",")
+    print(f"**Pozor:** u {n(fixed['n'])} z {n(total_calls)} volání zapsal Claude Code (verze {vers}) "
+          f"jen počet výstupních tokenů ze začátku odpovědi. Výstup je u nich odhadnutý z délky obsahu "
+          f"({ratio} tokenu na znak podle správně zapsaných volání, včetně skrytého thinking), "
+          f"doplněno {n(fixed['added'])} tokenů.\n")
 
 print("### 2. Rozpad cache\n")
 print("| Co se s cache dělo | Tokenů | Podíl na útratě | z toho hlavní agent | z toho subagenti |")
