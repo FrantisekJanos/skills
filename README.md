@@ -4,7 +4,7 @@ Skilly, které používám v Claude Code. Každá složka je jeden skill.
 
 | Skill | K čemu |
 |---|---|
-| [cache-history](cache-history/) | Ukáže, jak hospodaříš s prompt cache: kolik procent spotřeby padlo na obnovu cache hlavního agenta a subagentů a jestli se vyplatí hodinová cache pro subagenty. Čte jen lokální přepisy, nic neodesílá. |
+| [cache-history](cache-history/) | Ukáže, kolik procent útraty padlo na obnovu vypršelé prompt cache (hlavní agent a subagenti), kam šel zbytek a jestli se vyplatí hodinová cache pro subagenty. Čte jen lokální přepisy, nic neodesílá. |
 
 ## Instalace
 

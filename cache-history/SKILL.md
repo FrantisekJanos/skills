@@ -7,7 +7,7 @@ description: Use when the user asks how well Claude Code uses prompt cache, how 
 
 ## Přehled
 
-Skript `scripts/cache_history.py` projde lokální přepisy Claude Code (`~/.claude/projects/**/*.jsonl`, včetně subagentů) a spočítá, kolik spotřeby padlo na obnovu cache. Data neopouštějí počítač. Výsledkem jsou dvě tabulky v Markdownu, které ukážeš uživateli beze změny.
+Skript `scripts/cache_history.py` projde lokální přepisy Claude Code (`~/.claude/projects/**/*.jsonl`, včetně subagentů) a spočítá, kolik útraty padlo na obnovu vypršelé cache. Data neopouštějí počítač. Výstup je hotový Markdown, který ukážeš uživateli beze změny.
 
 ## Postup
 
@@ -16,39 +16,34 @@ Skript `scripts/cache_history.py` projde lokální přepisy Claude Code (`~/.cla
    python -I "<adresář tohoto skillu>/scripts/cache_history.py" 30
    ```
    Číslo je počet dní zpět, výchozí 30. Období v hodinách se zadá s `h`, např. `6h`. Na Windows může být `python` místo `python3` a naopak.
-2. Výstup ukaž celý, obě tabulky i podklady.
+2. Výstup ukaž celý.
 3. Zjisti, jestli je v `~/.claude/settings.json` nastavené `subagentPromptCacheTtl`.
-4. Pod tabulky napiš výklad podle sekce Jak číst výsledky: 2–4 věty o tom, co z čísel plyne pro tohoto uživatele.
+4. Pod výstup napiš výklad podle sekce Jak číst výsledky: 2–4 věty o tom, co z čísel plyne pro tohoto uživatele.
 
-## Co tabulky znamenají
+## Co výstup znamená
 
-Ceny jsou přepočtené na cenu neuloženého vstupu: zápis do 5min cache 1,25, do hodinové 2, výstup 5. Čtení z cache stojí u Opus 5.x 0,05, u Sonnet a Haiku 0,1. Proto dvě tabulky:
-
-- **Tabulka 1** (čtení 0,1): přehled spotřeby. Podíl subagentů, kolik tvoří čtení z cache, výpadky cache a simulace hodinové cache pro subagenty.
-- **Tabulka 2** (čtení 0,05, odpovídá Opusu): kolik procent spotřeby padlo na obnovu cache, zvlášť hlavní agent, subagenti a dohromady.
-
-**Výpadek cache** = mezi dvěma voláními modelu uplynulo víc než TTL (subagent 5 min, hlavní session obvykle 1 h), kontext měl přes 20 tis. tokenů a víc než polovina se musela zapsat znovu. Ztráta = přepsané tokeny × (cena zápisu − cena čtení).
-
-Hodnoty v M jsou cena, ne počet tokenů. Vysoký podíl čtení z cache je dobrý stav: kontext se nemusel platit znovu. Obnova cache je opak, kontext zaplacený po vypršení znovu jako nový zápis.
-
-Procenta v tabulkách se liší, protože každá má jiný celek (jmenovatel). Prahy níže platí pro tabulku 2, jen podíl subagentů se bere z tabulky 1.
-
-**Simulace 1h** porovná úsporu na výpadcích subagentů s pauzou 5–60 min s přirážkou za dražší zápis (2 místo 1,25) u všech zápisů subagentů. Záporné číslo znamená, že by se nastavení `subagentPromptCacheTtl: "1h"` nevyplatilo.
+- **První věta** je hlavní výsledek: kolik procent útraty šlo na obnovu vypršelé cache, zvlášť hlavní agent a subagenti.
+- **Kam šla útrata**: tabulka, jejíž řádky dávají dohromady 100 %. Útrata = tokeny × cena podle druhu (vůči běžnému vstupu téhož modelu): čtení z cache 0,05 u Opus, 0,1 u ostatních; zápis do cache 1,25 (5 min) nebo 2 (1 h); výstup 5.
+  - *Čtení z cache*: kontext, který model dostává při každém tahu znovu a který byl v cache. Velký podíl je dobrý stav, protože bez cache by stál 10–20× víc.
+  - *Zápis nového kontextu*: nové zprávy a výstupy nástrojů. Nevyhnutelné.
+  - *Obnova vypršelé cache*: cache vypršela a stejný kontext se zaplatil znovu jako zápis. To je ztráta, kterou jde ovlivnit.
+- **Výpadek cache** = mezi dvěma voláními modelu uplynulo víc než TTL (subagent 5 min, hlavní agent obvykle 1 h), kontext měl přes 20 tis. tokenů a víc než polovina se musela zapsat znovu.
+- **Hodinová cache pro subagenty** porovná úsporu na výpadcích s pauzou 5–60 min s přirážkou za dražší zápis u všech zápisů subagentů.
 
 ## Jak číst výsledky
 
 | Zjištění | Co doporučit |
 |---|---|
-| Obnova cache dohromady (tab. 2) pod 5 % | Cache funguje dobře, nic neměnit. |
-| Výpadky hlavní session (Podklady) hlavně po pauzách 2 h a víc | Po delší pauze nepokračovat ve staré session: uložit stav do poznámky v projektu a začít `/clear`. Každý návrat platí zápis celého kontextu znovu. |
-| Obnova cache subagentů (tab. 2) nad 3 % | Subagenti čekají na dlouhé příkazy (build, testy) déle než 5 min. Dlouhé příkazy pouštět na pozadí a kontrolovat do 4 minut, nebo dát subagentům užší zadání. |
-| Simulace 1h (tab. 2) kladná | Zvážit `subagentPromptCacheTtl: "1h"` v `settings.json`. Při záporné bilanci nenastavovat. |
-| Průměrný kontext na volání (Podklady) přes 200 tis. | Hlavní páka je velikost kontextu: každý tah čte celý kontext znovu. Častěji `/clear`, menší úkoly pro subagenty. |
-| Subagenti celkem (tab. 1) přes 60 % | Rutinní subagenty pouštět na levnějším modelu (`sonnet`). |
+| Obnova vypršelé cache pod 5 % | Cache funguje dobře, nic neměnit. |
+| Výpadky hlavního agenta hlavně po pauzách 2 h a víc | Po delší pauze nepokračovat ve staré session: uložit stav do poznámky v projektu a začít `/clear`. Každý návrat platí zápis celého kontextu znovu. |
+| Obnova cache u subagentů nad 3 % | Subagenti čekají na dlouhé příkazy (build, testy) déle než 5 min. Dlouhé příkazy pouštět na pozadí a kontrolovat do 4 minut, nebo dát subagentům užší zadání. |
+| Hodinová cache pro subagenty „vyplatila by se“ | Zvážit `subagentPromptCacheTtl: "1h"` v `settings.json`. Jinak nenastavovat. |
+| Průměrný kontext na volání přes 200 tis. | Hlavní páka je velikost kontextu: každý tah čte celý kontext znovu. Častěji `/clear`, menší úkoly pro subagenty. |
+| Subagenti přes 60 % útraty | Rutinní subagenty pouštět na levnějším modelu (`sonnet`). |
 
 ## Známá omezení
 
-- Váhy odpovídají cenám API. Jak se spotřeba promítá do limitu předplatného (Pro, Max, Team), Anthropic nezveřejňuje; poměry jsou odhad.
-- Skript nerozlišuje model u jednotlivých volání, proto dvě tabulky s pevnou vahou čtení.
+- Ceny jsou poměry z ceníku API, procenta tedy platí pro útratu přes API. Jak se spotřeba promítá do limitu předplatného (Pro, Max, Team), Anthropic nezveřejňuje.
+- Útrata se počítá vůči ceně vstupu daného modelu; rozdíl cen mezi modely (Opus dražší než Sonnet) v procentech není.
 - Do výpadku se nepočítá ztráta z příliš velkého kontextu, jen přepis cache po vypršení.
 - Přepisy starší, než drží Claude Code (výchozí `cleanupPeriodDays` 30), už na disku nejsou.

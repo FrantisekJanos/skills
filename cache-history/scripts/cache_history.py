@@ -1,9 +1,8 @@
 """Hospodaření s prompt cache v Claude Code podle lokálních přepisů (~/.claude/projects).
 
 Použití: python -I cache_history.py [období]   (výchozí 30 = dní; "6h" = hodin)
-Čte jen lokální soubory, nic neposílá. Vypíše dvě tabulky v Markdownu:
-  1. přehled spotřeby (váha čtení z cache 0,1 = Sonnet/Haiku),
-  2. podíl obnovy cache na spotřebě (váha čtení 0,05 = Opus 5.x).
+Čte jen lokální soubory, nic neposílá. Vypíše přehled v Markdownu:
+kolik útraty padlo na obnovu vypršelé cache (hlavní agent a subagenti) a kam šel zbytek.
 """
 import json, os, sys, glob, collections
 from datetime import datetime, timezone, timedelta
@@ -22,9 +21,14 @@ else:
     SPAN = timedelta(days=float(ARG.rstrip("d").replace(",", ".")))
     LABEL = f"{ARG.rstrip('d')} dní"
 SINCE = datetime.now(timezone.utc) - SPAN
-# Váhy vůči ceně neuloženého vstupu: zápis 5min cache 1,25, 1h cache 2, výstup 5.
-BASE = dict(inp=1.0, w5=1.25, w1=2.0, out=5.0)
+
+# Ceny vůči ceně běžného vstupu téhož modelu (ceník API).
+W_INP, W_W5, W_W1, W_OUT = 1.0, 1.25, 2.0, 5.0
 MIN_CTX = 20000  # menší kontext se za výpadek nepočítá
+
+
+def w_read(model):
+    return 0.05 if "opus" in (model or "").lower() else 0.1
 
 
 def ts(s):
@@ -60,7 +64,7 @@ for f in glob.glob(os.path.join(ROOT, "**", "*.jsonl"), recursive=True):
             key = m.get("id") or d.get("requestId") or d.get("uuid")
             calls[key] = dict(t=t, inp=u.get("input_tokens", 0) or 0, w5=w5, w1=w1,
                               rd=u.get("cache_read_input_tokens", 0) or 0,
-                              out=u.get("output_tokens", 0) or 0)
+                              out=u.get("output_tokens", 0) or 0, model=m.get("model"))
     if calls:
         streams.append((kind, sorted(calls.values(), key=lambda c: c["t"])))
 
@@ -68,99 +72,109 @@ if not streams:
     print(f"V {ROOT} nejsou za posledních {LABEL} žádné přepisy s údaji o tokenech.")
     sys.exit(0)
 
-raw = collections.Counter()          # (kind, pole) -> tokeny
-miss = {"main": [], "sub": []}        # (přepsáno, zápis 1h?, mezera s)
-sub_w5_total = 0
+# Útrata po položkách: cost[(položka, kind)], tokeny tok[(položka, kind)]
+cost = collections.Counter()
+tok = collections.Counter()
+miss = {"main": [], "sub": []}  # (přepsáno, mezera s, zbytečně navíc)
+sub_write5 = 0.0                 # cena 5min zápisů subagentů (pro simulaci 1h)
+sim_save = 0.0
+gaps = collections.Counter()
+ctx_sum = collections.Counter()
+n_calls = collections.Counter()
 n_streams = collections.Counter()
+
 for kind, calls in streams:
     n_streams[kind] += 1
     prev = None
     for c in calls:
-        for k in ("inp", "w5", "w1", "rd", "out"):
-            raw[(kind, k)] += c[k]
-        if kind == "sub":
-            sub_w5_total += c["w5"]
+        rd_w = w_read(c["model"])
+        write_cost = c["w5"] * W_W5 + c["w1"] * W_W1
+        renew_tok = 0
         if prev is not None:
             gap = (c["t"] - prev["t"]).total_seconds()
+            if kind == "sub":
+                gaps["< 1 min" if gap < 60 else "1–5 min" if gap < 300 else "5–60 min" if gap < 3600 else "> 1 h"] += 1
             prev_ctx = prev["rd"] + prev["w5"] + prev["w1"] + prev["inp"]
             ttl = 3600 if prev["w1"] > prev["w5"] else 300
             rewritten = min(c["w5"] + c["w1"], prev_ctx)
             if gap > ttl and prev_ctx > MIN_CTX and c["rd"] < 0.5 * prev_ctx and rewritten > 0.5 * prev_ctx:
-                miss[kind].append((rewritten, c["w1"] > c["w5"], gap))
+                renew_tok = rewritten
+                wr = W_W1 if c["w1"] > c["w5"] else W_W5
+                miss[kind].append((rewritten, gap, rewritten * (wr - rd_w)))
+                if kind == "sub" and gap <= 3600:
+                    sim_save += rewritten * (W_W5 - rd_w)
+        renew_cost = write_cost * renew_tok / max(1, c["w5"] + c["w1"])
+        for item, t_, v in (
+            ("read", c["rd"], c["rd"] * rd_w),
+            ("new", c["w5"] + c["w1"] - renew_tok, write_cost - renew_cost),
+            ("renew", renew_tok, renew_cost),
+            ("inp", c["inp"], c["inp"] * W_INP),
+            ("out", c["out"], c["out"] * W_OUT),
+        ):
+            tok[(item, kind)] += t_
+            cost[(item, kind)] += v
+        if kind == "sub":
+            sub_write5 += c["w5"]
+        ctx_sum[kind] += c["rd"] + c["w5"] + c["w1"]
+        n_calls[kind] += 1
         prev = c
 
-
-def evaluate(rd_w):
-    W = dict(BASE, rd=rd_w)
-    tot = {k: sum(raw[(k, f)] * W[f] for f in W) for k in ("main", "sub")}
-    T = tot["main"] + tot["sub"]
-    loss = {k: sum(r * ((W["w1"] if one_h else W["w5"]) - rd_w) for r, one_h, _ in miss[k])
-            for k in ("main", "sub")}
-    read = (raw[("main", "rd")] + raw[("sub", "rd")]) * rd_w
-    sim_save = sum(r * (W["w5"] - rd_w) for r, _, gap in miss["sub"] if gap <= 3600)
-    surcharge = sub_w5_total * (W["w1"] - W["w5"])
-    return dict(T=T, tot=tot, loss=loss, read=read, sim=sim_save - surcharge,
-                sim_save=sim_save, surcharge=surcharge)
+ITEMS = [
+    ("read", "Čtení z cache: kontext poslaný znovu, levné"),
+    ("new", "Zápis nového kontextu do cache"),
+    ("renew", "**Obnova vypršelé cache: kontext zaplacený znovu**"),
+    ("inp", "Vstup bez cache"),
+    ("out", "Výstup modelu"),
+]
+T = sum(cost.values())
 
 
-def mil(x):
-    return f"{x / 1e6:,.0f} M".replace(",", " ")
+def p(x):
+    return f"{x / T * 100:.1f} %".replace(".", ",") if T else "0 %"
 
 
-def pct(x, T):
-    return f"{x / T * 100:.1f} %".replace(".", ",")
+def n(x):
+    if x >= 1e9:
+        return f"{x / 1e9:.1f} mld.".replace(".", ",", 1)
+    if x >= 1e6:
+        return f"{x / 1e6:.0f} mil."
+    return f"{x / 1e3:.0f} tis." if x >= 500 else f"{x:.0f}"
 
 
-def avg_k(k):
-    return f"{sum(r for r, _, _ in miss[k]) / max(1, len(miss[k])) / 1e3:.0f} tis."
+renew = cost[("renew", "main")] + cost[("renew", "sub")]
+sub_share = sum(cost[(i, "sub")] for i, _ in ITEMS)
+total_calls = n_calls["main"] + n_calls["sub"]
 
-
-a = evaluate(0.1)
-b = evaluate(0.05)
-reads = raw[("main", "rd")] + raw[("sub", "rd")]
-n_calls = sum(len(c) for _, c in streams)
-
-print(f"## Hospodaření s cache za posledních {LABEL}\n")
+print(f"## Prompt cache za posledních {LABEL}\n")
+print(f"**Obnova vypršelé cache: {p(renew)} útraty** "
+      f"(hlavní agent {p(cost[('renew', 'main')])}, subagenti {p(cost[('renew', 'sub')])}).\n")
 print(f"Hlavních sessions {n_streams['main']}, subagentů {n_streams['sub']}, "
-      f"volání modelu {str(n_calls) if n_calls < 1000 else f'{n_calls:,}'.replace(',', ' ')}.")
-print("Hodnoty v M jsou cena, ne počet tokenů: M = cena milionu tokenů běžného (neuloženého) vstupu.")
-print("Čtení z cache stojí 0,05–0,1 této ceny. Vysoký podíl čtení je dobrý stav, kontext se neplatil znovu.\n")
+      f"volání modelu {total_calls:,}".replace(",", " ").replace("  ", ", ") + f". Subagenti udělali {p(sub_share)} útraty.\n")
 
-print("### 1. Přehled (váha čtení z cache 0,1)\n")
-print("| Co | Hodnota | Podíl |\n|---|---|---|")
-print(f"| Celkem | {mil(a['T'])} | 100 % |")
-print(f"| Subagenti celkem | {mil(a['tot']['sub'])} | {pct(a['tot']['sub'], a['T'])} |")
-print(f"| Čtení z cache (vše) | přečteno {mil(reads)} tokenů, cena {mil(a['read'])} | {pct(a['read'], a['T'])} |")
-print(f"| Výpadek cache subagenta (pauza > 5 min) | {len(miss['sub'])}×, {mil(a['loss']['sub'])}, "
-      f"průměrně {avg_k('sub')} přepsáno | {pct(a['loss']['sub'], a['T'])} |")
-print(f"| Výpadek cache hlavní session (pauza > TTL) | {len(miss['main'])}×, {mil(a['loss']['main'])}, "
-      f"průměrně {avg_k('main')} | {pct(a['loss']['main'], a['T'])} |")
-print(f"| Simulace `subagentPromptCacheTtl: \"1h\"` | úspora {mil(a['sim_save'])}, "
-      f"přirážka {mil(a['surcharge'])} | {'+' if a['sim'] >= 0 else '−'}{pct(abs(a['sim']), a['T'])} |")
+print("### Kam šla útrata\n")
+print("| Položka | Tokenů | Podíl na útratě | z toho hlavní agent | z toho subagenti |")
+print("|---|---|---|---|---|")
+for item, label in ITEMS:
+    t_ = tok[(item, "main")] + tok[(item, "sub")]
+    print(f"| {label} | {n(t_)} | {p(cost[(item, 'main')] + cost[(item, 'sub')])} | "
+          f"{p(cost[(item, 'main')])} | {p(cost[(item, 'sub')])} |")
+print(f"| **Celkem** | | **100 %** | {p(T - sub_share)} | {p(sub_share)} |\n")
+print("Útrata = tokeny × cena podle druhu, vůči běžnému vstupu: čtení z cache 0,05 (Opus) "
+      "nebo 0,1 (ostatní), zápis do cache 1,25 (5 min) nebo 2 (1 h), výstup 5. "
+      "Vysoký podíl čtení z cache je dobrý stav.\n")
 
-print("\n### 2. Kolik spotřeby padlo na obnovu cache (váha čtení 0,05)\n")
-print("| Co | Hodnota | Podíl ze spotřeby |\n|---|---|---|")
-print(f"| Celkem | {mil(b['T'])} | 100 % |")
-print(f"| Obnova cache subagentů | {mil(b['loss']['sub'])} | {pct(b['loss']['sub'], b['T'])} |")
-print(f"| Obnova cache hlavního agenta | {mil(b['loss']['main'])} | {pct(b['loss']['main'], b['T'])} |")
-both = b['loss']['sub'] + b['loss']['main']
-print(f"| **Obnova cache dohromady** | {mil(both)} | **{pct(both, b['T'])}** |")
-print(f"| Čtení z cache (levné, žádoucí) | {mil(b['read'])} | {pct(b['read'], b['T'])} |")
-print(f"| Simulace 1h TTL pro subagenty | bilance | {'+' if b['sim'] >= 0 else '−'}{pct(abs(b['sim']), b['T'])} |")
-
-gaps = collections.Counter()
-for kind, calls in streams:
-    if kind != "sub":
-        continue
-    for p, c in zip(calls, calls[1:]):
-        g = (c["t"] - p["t"]).total_seconds()
-        gaps["< 1 min" if g < 60 else "1–5 min" if g < 300 else "5–60 min" if g < 3600 else "> 1 h"] += 1
-mb = collections.Counter()
-for _, _, g in miss["main"]:
-    mb["1–2 h" if g < 7200 else "2–8 h" if g < 28800 else "> 8 h"] += 1
-ctx = {k: sum(c["rd"] + c["w5"] + c["w1"] for kk, cs in streams if kk == k for c in cs)
-          / max(1, sum(len(cs) for kk, cs in streams if kk == k)) for k in ("main", "sub")}
-print("\n### Podklady\n")
-print("- Mezery mezi voláními subagenta: " + ", ".join(f"{k} {gaps[k]}×" for k in ("< 1 min", "1–5 min", "5–60 min", "> 1 h")))
-print("- Výpadky hlavní session podle pauzy: " + ", ".join(f"{k} {mb[k]}×" for k in ("1–2 h", "2–8 h", "> 8 h")))
-print(f"- Průměrný kontext na volání: hlavní {ctx['main'] / 1e3:.0f} tis., subagent {ctx['sub'] / 1e3:.0f} tis.")
+print("### Výpadky cache\n")
+ms, mm = miss["sub"], miss["main"]
+avg = lambda xs: n(sum(x[0] for x in xs) / len(xs)) if xs else "0"
+print(f"- Subagenti: {len(ms)}× cache vypršela (pauza nad 5 min)" + (f", pokaždé znovu zapsáno průměrně {avg(ms)} tokenů." if ms else "."))
+mb = collections.Counter("1–2 h" if g < 7200 else "2–8 h" if g < 28800 else "nad 8 h" for _, g, _ in mm)
+print(f"- Hlavní agent: {len(mm)}× cache vypršela (pauza nad 1 h)" + (f", průměrně {avg(mm)} tokenů; "
+      f"po pauze 1–2 h {mb['1–2 h']}×, 2–8 h {mb['2–8 h']}×, nad 8 h {mb['nad 8 h']}×." if mm else "."))
+print(f"- Mezery mezi voláními subagenta: " + ", ".join(f"{k} {gaps[k]}×" for k in ("< 1 min", "1–5 min", "5–60 min", "> 1 h")))
+surcharge = sub_write5 * (W_W1 - W_W5)
+bal = sim_save - surcharge
+verdict = "vyplatila by se" if bal > 0 else "nevyplatila by se"
+print(f"- Hodinová cache pro subagenty (`subagentPromptCacheTtl: \"1h\"`): ušetřila by {p(sim_save)}, "
+      f"přirážka za dražší zápis {p(surcharge)}, celkem {'+' if bal > 0 else '−'}{p(abs(bal))} → {verdict}.")
+print(f"- Průměrný kontext na volání: hlavní agent {n(ctx_sum['main'] / max(1, n_calls['main']))}, "
+      f"subagent {n(ctx_sum['sub'] / max(1, n_calls['sub']))} tokenů.")
