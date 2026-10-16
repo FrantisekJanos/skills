@@ -161,7 +161,7 @@ def n(x):
         return f"{x / 1e9:.1f} mld.".replace(".", ",", 1)
     if x >= 1e6:
         return f"{x / 1e6:.0f} mil."
-    return f"{x / 1e3:.0f} tis." if x >= 500 else f"{x:.0f}"
+    return f"{x / 1e3:.0f} tis." if x >= 10000 else f"{x:,.0f}".replace(",", " ")
 
 
 renew = cost[("renew", "main")] + cost[("renew", "sub")]
@@ -174,9 +174,21 @@ print(f"**Obnova vypršelé cache: {p(renew)} útraty** "
 print(f"Hlavních sessions {n_streams['main']}, subagentů {n_streams['sub']}, "
       f"volání modelu {total_calls:,}".replace(",", " ").replace("  ", ", ") + f". Subagenti udělali {p(sub_share)} útraty.\n")
 
-print("### Kam šla útrata\n")
 TT = sum(tok.values())
 pt = lambda x: f"{x / TT * 100:.1f} %".replace(".", ",") if TT else "0 %"
+out_t = tok[("out", "main")] + tok[("out", "sub")]
+out_c = cost[("out", "main")] + cost[("out", "sub")]
+print("### Vstup a výstup\n")
+print("| | Tokenů | Podíl na tokenech | Podíl na útratě | Průměr na volání |\n|---|---|---|---|---|")
+print(f"| Vstup (čtení z cache, zápis, obnova, bez cache) | {n(TT - out_t)} | {pt(TT - out_t)} | "
+      f"{p(T - out_c)} | {n((TT - out_t) / max(1, total_calls))} |")
+print(f"| Výstup modelu (včetně thinking) | {n(out_t)} | {pt(out_t)} | {p(out_c)} | "
+      f"{n(out_t / max(1, total_calls))} |")
+print(f"| **Celkem** | {n(TT)} | 100 % | 100 % | |\n")
+print("Model při každém volání dostane celou dosavadní konverzaci znovu jako vstup, "
+      "ale vypíše jen novou odpověď. Proto je vstupních tokenů o dva řády víc.\n")
+
+print("### Kam šla útrata\n")
 print("| Položka | Tokenů | Podíl na tokenech | Podíl na útratě | z toho hlavní agent | z toho subagenti |")
 print("|---|---|---|---|---|---|")
 for item, label in ITEMS:
