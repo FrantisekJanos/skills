@@ -6,7 +6,7 @@ Použití: python -I cache_history.py [období]
 Čte jen lokální soubory, nic neposílá. Vypíše přehled v Markdownu:
 kolik útraty padlo na obnovu vypršelé cache (hlavní agent a subagenti) a kam šel zbytek.
 """
-import json, os, sys, glob, collections
+import json, os, re, sys, glob, collections
 from datetime import datetime, timezone, timedelta
 
 try:
@@ -15,7 +15,22 @@ except Exception:
     pass
 
 ROOT = os.path.expanduser("~/.claude/projects")
-ARG = "".join(sys.argv[1:]).replace(" ", "").lower() if len(sys.argv) > 1 else "30"
+ARGS = sys.argv[1:]
+PROJECT = None  # --project NÁZEV: jen projekty, jejichž složka obsahuje NÁZEV
+if "--project" in ARGS:
+    i = ARGS.index("--project")
+    ARGS_PROJECT = ARGS[i + 1]
+    PROJECT = re.sub(r"[^A-Za-z0-9]", "-", ARGS[i + 1]).lower()
+    ARGS = ARGS[:i] + ARGS[i + 2:]
+ARG = "".join(ARGS).replace(" ", "").lower() if ARGS else "30"
+HOME_PREFIX = re.sub(r"[^A-Za-z0-9]", "-", os.path.expanduser("~")).lower()
+
+
+def project_name(path):
+    """Složka v ~/.claude/projects → čitelný název projektu (bez cesty k domovu)."""
+    d = os.path.relpath(path, ROOT).split(os.sep)[0]
+    low = d.lower()
+    return (d[len(HOME_PREFIX):] if low.startswith(HOME_PREFIX) else d).strip("-") or "~"
 NOW = datetime.now(timezone.utc)
 UNTIL = NOW
 LOCAL = NOW.astimezone().tzinfo
@@ -63,6 +78,9 @@ for f in glob.glob(os.path.join(ROOT, "**", "*.jsonl"), recursive=True):
     if os.path.getmtime(f) < SINCE.timestamp():
         continue
     kind = "sub" if os.sep + "subagents" + os.sep in f or "/subagents/" in f else "main"
+    proj = project_name(f)
+    if PROJECT and PROJECT not in proj.lower():
+        continue
     calls = {}
     with open(f, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -97,7 +115,7 @@ for f in glob.glob(os.path.join(ROOT, "**", "*.jsonl"), recursive=True):
                               out=max(u.get("output_tokens", 0) or 0, old["out"] if old else 0),
                               model=m.get("model"), vis=vis + (old["vis"] if old else 0),
                               stop=m.get("stop_reason") or (old["stop"] if old else None),
-                              ver=d.get("version"))
+                              ver=d.get("version"), proj=proj)
     if calls:
         streams.append((kind, sorted(calls.values(), key=lambda c: c["t"])))
 
@@ -138,6 +156,9 @@ gaps = collections.Counter()
 ctx_sum = collections.Counter()
 n_calls = collections.Counter()
 n_streams = collections.Counter()
+pcost = collections.Counter()   # projekt -> útrata
+psub = collections.Counter()    # projekt -> útrata subagentů
+prenew = collections.Counter()  # projekt -> útrata za obnovu cache
 
 for kind, calls in streams:
     n_streams[kind] += 1
@@ -169,6 +190,11 @@ for kind, calls in streams:
         ):
             tok[(item, kind)] += t_
             cost[(item, kind)] += v
+            pcost[c["proj"]] += v
+            if kind == "sub":
+                psub[c["proj"]] += v
+            if item == "renew":
+                prenew[c["proj"]] += v
         for item, t_, v in (("w5", c["w5"], c["w5"] * W_W5), ("w1", c["w1"], c["w1"] * W_W1)):
             btok[item] += t_
             bcost[item] += v
@@ -204,7 +230,7 @@ renew = cost[("renew", "main")] + cost[("renew", "sub")]
 sub_share = sum(cost[(i, "sub")] for i, _ in ITEMS)
 total_calls = n_calls["main"] + n_calls["sub"]
 
-print(f"## {LABEL_PREFIX} {LABEL}\n")
+print(f"## {LABEL_PREFIX} {LABEL}" + (f", projekt {ARGS_PROJECT}" if PROJECT else "") + "\n")
 print(f"**Obnova vypršelé cache: {p(renew)} útraty** "
       f"(hlavní agent {p(cost[('renew', 'main')])}, subagenti {p(cost[('renew', 'sub')])}).\n")
 print(f"Hlavních sessions {n_streams['main']}, subagentů {n_streams['sub']}, "
@@ -257,6 +283,19 @@ print(f"| **Cache celkem** | {n(ct)} | {p(cc_)} | "
       f"{p(sum(cost[(i, 'main')] for i, _ in cache_items))} | {p(sum(cost[(i, 'sub')] for i, _ in cache_items))} |\n")
 print("Procenta jsou z celé útraty v tabulce 1. Zápis nového kontextu a obnova dohromady "
       "dávají oba řádky zápisu do cache z tabulky 1.\n")
+
+if len(pcost) > 1:
+    print("### 3. Podle projektů\n")
+    print("| Projekt | Podíl na útratě | z toho subagenti | Obnova cache, podíl na celé útratě | Obnova cache v rámci projektu |")
+    print("|---|---|---|---|---|")
+    top = pcost.most_common(10)
+    for pr, v in top:
+        inner = f"{prenew[pr] / v * 100:.1f} %".replace(".", ",") if v else "0 %"
+        print(f"| {pr} | {p(v)} | {p(psub[pr])} | {p(prenew[pr])} | {inner} |")
+    rest = T - sum(v for _, v in top)
+    if len(pcost) > len(top):
+        print(f"| ostatní ({len(pcost) - len(top)}) | {p(rest)} | | | |")
+    print()
 
 print("### Výpadky cache\n")
 ms, mm = miss["sub"], miss["main"]

@@ -15,7 +15,7 @@ Skript `scripts/cache_history.py` projde lokální přepisy Claude Code (`~/.cla
    ```
    python -I "<adresář tohoto skillu>/scripts/cache_history.py" 30
    ```
-   Období: `30` = posledních 30 dní (výchozí), `6h` = posledních 6 hodin, `15.9.-15.10.2026` nebo `2026-09-15..2026-10-15` = od–do včetně koncového dne. Data starší než `cleanupPeriodDays` (výchozí 30 dní) už na disku nejsou; když začátek období sahá dál, řekni to uživateli. Na Windows může být `python` místo `python3` a naopak.
+   Období: `30` = posledních 30 dní (výchozí), `6h` = posledních 6 hodin, `15.9.-15.10.2026` nebo `2026-09-15..2026-10-15` = od–do včetně koncového dne. Jen jeden projekt: přidej `--project NÁZEV` (část názvu složky projektu, např. `--project 43_ModerniEnergetika`). Data starší než `cleanupPeriodDays` (výchozí 30 dní) už na disku nejsou; když začátek období sahá dál, řekni to uživateli. Na Windows může být `python` místo `python3` a naopak.
 2. Výstup ukaž celý.
 3. Zjisti, jestli je v `~/.claude/settings.json` nastavené `subagentPromptCacheTtl`.
 4. Pod výstup napiš výklad podle sekce Jak číst výsledky: 2–4 věty o tom, co z čísel plyne pro tohoto uživatele.
@@ -28,6 +28,7 @@ Skript `scripts/cache_history.py` projde lokální přepisy Claude Code (`~/.cla
   - *Čtení z cache*: kontext, který model dostává při každém tahu znovu a který byl v cache. Velký podíl je dobrý stav, protože bez cache by stál 10–20× víc.
   - *Zápis nového kontextu*: nové zprávy a výstupy nástrojů. Nevyhnutelné.
   - *Obnova vypršelé cache*: cache vypršela a stejný kontext se zaplatil znovu jako zápis. To je ztráta, kterou jde ovlivnit.
+- **Tabulka 3, Podle projektů** (jen když je projektů víc): deset projektů s největší útratou, podíl subagentů a obnova cache jako podíl na celé útratě i v rámci projektu. Projekt s vysokou obnovou v rámci projektu je kandidát na pravidlo pro subagenty níže.
 - **Výpadek cache** = mezi dvěma voláními modelu uplynulo víc než TTL (subagent 5 min, hlavní agent obvykle 1 h), kontext měl přes 20 tis. tokenů a víc než polovina se musela zapsat znovu.
 - **Hodinová cache pro subagenty** porovná úsporu na výpadcích s pauzou 5–60 min s přirážkou za dražší zápis u všech zápisů subagentů.
 
@@ -37,7 +38,7 @@ Skript `scripts/cache_history.py` projde lokální přepisy Claude Code (`~/.cla
 |---|---|
 | Obnova vypršelé cache pod 5 % | Cache funguje dobře, nic neměnit. |
 | Výpadky hlavního agenta hlavně po pauzách 2 h a víc | Po delší pauze nepokračovat ve staré session: uložit stav do poznámky v projektu a začít `/clear`. Každý návrat platí zápis celého kontextu znovu. |
-| Obnova cache u subagentů nad 3 % | Subagenti čekají na dlouhé příkazy (build, testy) déle než 5 min. Dlouhé příkazy pouštět na pozadí a kontrolovat do 4 minut, nebo dát subagentům užší zadání. |
+| Obnova cache u subagentů nad 3 % | Subagenti čekají na dlouhé příkazy (build, testy) déle než 5 min. Keep-alive dotaz u subagentů nastavit nejde, pomáhá pravidlo v briefu každého subagenta: „dlouhé příkazy pouštěj na pozadí a při čekání volej nástroj aspoň každé 4 minuty; nečekej na jiného agenta bez volání nástroje; vlož toto pravidlo doslova do briefu každého delegáta“. Plus užší zadání. |
 | Hodinová cache pro subagenty „vyplatila by se“ | Zvážit `subagentPromptCacheTtl: "1h"` v `settings.json`. Jinak nenastavovat. |
 | Průměrný kontext na volání přes 200 tis. | Hlavní páka je velikost kontextu: každý tah čte celý kontext znovu. Častěji `/clear`, menší úkoly pro subagenty. |
 | Subagenti přes 60 % útraty | Rutinní subagenty pouštět na levnějším modelu (`sonnet`). |
