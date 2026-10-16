@@ -98,7 +98,9 @@ if not streams:
 # Útrata po položkách: cost[(položka, kind)], tokeny tok[(položka, kind)]
 cost = collections.Counter()
 tok = collections.Counter()
-miss = {"main": [], "sub": []}  # (přepsáno, mezera s, zbytečně navíc)
+btok = collections.Counter()   # zápisy do cache podle TTL (pro tabulku spotřeby)
+bcost = collections.Counter()
+miss ={"main": [], "sub": []}  # (přepsáno, mezera s, zbytečně navíc)
 sub_write5 = 0.0                 # cena 5min zápisů subagentů (pro simulaci 1h)
 sim_save = 0.0
 gaps = collections.Counter()
@@ -136,6 +138,9 @@ for kind, calls in streams:
         ):
             tok[(item, kind)] += t_
             cost[(item, kind)] += v
+        for item, t_, v in (("w5", c["w5"], c["w5"] * W_W5), ("w1", c["w1"], c["w1"] * W_W1)):
+            btok[item] += t_
+            bcost[item] += v
         if kind == "sub":
             sub_write5 += c["w5"]
         ctx_sum[kind] += c["rd"] + c["w5"] + c["w1"]
@@ -176,30 +181,42 @@ print(f"Hlavních sessions {n_streams['main']}, subagentů {n_streams['sub']}, "
 
 TT = sum(tok.values())
 pt = lambda x: f"{x / TT * 100:.1f} %".replace(".", ",") if TT else "0 %"
-out_t = tok[("out", "main")] + tok[("out", "sub")]
-out_c = cost[("out", "main")] + cost[("out", "sub")]
-print("### Vstup a výstup\n")
-print("| | Tokenů | Podíl na tokenech | Podíl na útratě | Průměr na volání |\n|---|---|---|---|---|")
-print(f"| Vstup (čtení z cache, zápis, obnova, bez cache) | {n(TT - out_t)} | {pt(TT - out_t)} | "
-      f"{p(T - out_c)} | {n((TT - out_t) / max(1, total_calls))} |")
-print(f"| Výstup modelu (včetně thinking) | {n(out_t)} | {pt(out_t)} | {p(out_c)} | "
-      f"{n(out_t / max(1, total_calls))} |")
-print(f"| **Celkem** | {n(TT)} | 100 % | 100 % | |\n")
-print("Model při každém volání dostane celou dosavadní konverzaci znovu jako vstup, "
-      "ale vypíše jen novou odpověď. Proto je vstupních tokenů o dva řády víc.\n")
+both = lambda d, item: d[(item, "main")] + d[(item, "sub")]
 
-print("### Kam šla útrata\n")
-print("| Položka | Tokenů | Podíl na tokenech | Podíl na útratě | z toho hlavní agent | z toho subagenti |")
-print("|---|---|---|---|---|---|")
-for item, label in ITEMS:
-    t_ = tok[(item, "main")] + tok[(item, "sub")]
-    print(f"| {label} | {n(t_)} | {pt(t_)} | {p(cost[(item, 'main')] + cost[(item, 'sub')])} | "
+print("### 1. Spotřeba tokenů: za co platíš Anthropicu\n")
+print("| Položka účtu | Cena za token (vstup = 1) | Tokenů | Podíl na tokenech | Podíl na útratě |")
+print("|---|---|---|---|---|")
+for label, price, t_, c_ in (
+    ("Vstup bez cache", "1", both(tok, "inp"), both(cost, "inp")),
+    ("Zápis do cache, 5 min", "1,25", btok["w5"], bcost["w5"]),
+    ("Zápis do cache, 1 h", "2", btok["w1"], bcost["w1"]),
+    ("Čtení z cache", "0,05 Opus / 0,1 ostatní", both(tok, "read"), both(cost, "read")),
+    ("Výstup modelu (včetně thinking)", "5", both(tok, "out"), both(cost, "out")),
+):
+    print(f"| {label} | {price} | {n(t_)} | {pt(t_)} | {p(c_)} |")
+print(f"| **Celkem** | | **{n(TT)}** | **100 %** | **100 %** |\n")
+out_t = both(tok, "out")
+print(f"Průměrné volání modelu: vstup {n((TT - out_t) / max(1, total_calls))} tokenů, "
+      f"výstup {n(out_t / max(1, total_calls))}. Model dostane při každém volání celou dosavadní "
+      "konverzaci znovu, ale vypíše jen novou odpověď. Proto je vstupu o dva řády víc.\n")
+
+print("### 2. Rozpad cache\n")
+print("| Co se s cache dělo | Tokenů | Podíl na útratě | z toho hlavní agent | z toho subagenti |")
+print("|---|---|---|---|---|")
+cache_items = [
+    ("read", "Čtení z cache: kontext poslaný znovu (levné, žádoucí)"),
+    ("new", "Zápis nového kontextu do cache (nevyhnutelný)"),
+    ("renew", "**Obnova vypršelé cache: kontext zaplacený znovu (ztráta)**"),
+]
+for item, label in cache_items:
+    print(f"| {label} | {n(both(tok, item))} | {p(both(cost, item))} | "
           f"{p(cost[(item, 'main')])} | {p(cost[(item, 'sub')])} |")
-print(f"| **Celkem** | {n(TT)} | **100 %** | **100 %** | {p(T - sub_share)} | {p(sub_share)} |\n")
-print("Tabulka zahrnuje všechny tokeny (vstup, cache i výstup). *Podíl na tokenech* počítá kusy, "
-      "*podíl na útratě* tokeny × cena podle druhu, vůči běžnému vstupu: čtení z cache 0,05 (Opus) "
-      "nebo 0,1 (ostatní), zápis do cache 1,25 (5 min) nebo 2 (1 h), výstup 5. "
-      "Čtení z cache je většina tokenů, ale stojí málo; vysoký podíl je dobrý stav.\n")
+ct = sum(both(tok, i) for i, _ in cache_items)
+cc_ = sum(both(cost, i) for i, _ in cache_items)
+print(f"| **Cache celkem** | {n(ct)} | {p(cc_)} | "
+      f"{p(sum(cost[(i, 'main')] for i, _ in cache_items))} | {p(sum(cost[(i, 'sub')] for i, _ in cache_items))} |\n")
+print("Procenta jsou z celé útraty v tabulce 1. Zápis nového kontextu a obnova dohromady "
+      "dávají oba řádky zápisu do cache z tabulky 1.\n")
 
 print("### Výpadky cache\n")
 ms, mm = miss["sub"], miss["main"]
