@@ -29,6 +29,8 @@ Ceny jsou přepočtené na cenu neuloženého vstupu: zápis do 5min cache 1,25,
 
 **Výpadek cache** = mezi dvěma voláními modelu uplynulo víc než TTL (subagent 5 min, hlavní session obvykle 1 h), kontext měl přes 20 tis. tokenů a víc než polovina se musela zapsat znovu. Ztráta = přepsané tokeny × (cena zápisu − cena čtení).
 
+Hodnoty v M jsou cena, ne počet tokenů. Vysoký podíl čtení z cache je dobrý stav: kontext se nemusel platit znovu. Obnova cache je opak, kontext zaplacený po vypršení znovu jako nový zápis.
+
 Procenta v tabulkách se liší, protože každá má jiný celek (jmenovatel). Prahy níže platí pro tabulku 2, jen podíl subagentů se bere z tabulky 1.
 
 **Simulace 1h** porovná úsporu na výpadcích subagentů s pauzou 5–60 min s přirážkou za dražší zápis (2 místo 1,25) u všech zápisů subagentů. Záporné číslo znamená, že by se nastavení `subagentPromptCacheTtl: "1h"` nevyplatilo.

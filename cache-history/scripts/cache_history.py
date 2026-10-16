@@ -123,14 +123,14 @@ n_calls = sum(len(c) for _, c in streams)
 print(f"## Hospodaření s cache za posledních {LABEL}\n")
 print(f"Hlavních sessions {n_streams['main']}, subagentů {n_streams['sub']}, "
       f"volání modelu {str(n_calls) if n_calls < 1000 else f'{n_calls:,}'.replace(',', ' ')}.")
-print("Jednotka M = milion tokenů přepočtených na cenu neuloženého vstupu.\n")
+print("Hodnoty v M jsou cena, ne počet tokenů: M = cena milionu tokenů běžného (neuloženého) vstupu.")
+print("Čtení z cache stojí 0,05–0,1 této ceny. Vysoký podíl čtení je dobrý stav, kontext se neplatil znovu.\n")
 
 print("### 1. Přehled (váha čtení z cache 0,1)\n")
 print("| Co | Hodnota | Podíl |\n|---|---|---|")
 print(f"| Celkem | {mil(a['T'])} | 100 % |")
 print(f"| Subagenti celkem | {mil(a['tot']['sub'])} | {pct(a['tot']['sub'], a['T'])} |")
-print(f"| Čtení z cache (vše) | {reads / 1e9:.1f} mld. tokenů, {mil(a['read'])} | {pct(a['read'], a['T'])} |"
-      .replace(".", ",", 1))
+print(f"| Čtení z cache (vše) | přečteno {mil(reads)} tokenů, cena {mil(a['read'])} | {pct(a['read'], a['T'])} |")
 print(f"| Výpadek cache subagenta (pauza > 5 min) | {len(miss['sub'])}×, {mil(a['loss']['sub'])}, "
       f"průměrně {avg_k('sub')} přepsáno | {pct(a['loss']['sub'], a['T'])} |")
 print(f"| Výpadek cache hlavní session (pauza > TTL) | {len(miss['main'])}×, {mil(a['loss']['main'])}, "
@@ -145,7 +145,7 @@ print(f"| Obnova cache subagentů | {mil(b['loss']['sub'])} | {pct(b['loss']['su
 print(f"| Obnova cache hlavního agenta | {mil(b['loss']['main'])} | {pct(b['loss']['main'], b['T'])} |")
 both = b['loss']['sub'] + b['loss']['main']
 print(f"| **Obnova cache dohromady** | {mil(both)} | **{pct(both, b['T'])}** |")
-print(f"| Čtení z cache | {mil(b['read'])} | {pct(b['read'], b['T'])} |")
+print(f"| Čtení z cache (levné, žádoucí) | {mil(b['read'])} | {pct(b['read'], b['T'])} |")
 print(f"| Simulace 1h TTL pro subagenty | bilance | {'+' if b['sim'] >= 0 else '−'}{pct(abs(b['sim']), b['T'])} |")
 
 gaps = collections.Counter()
