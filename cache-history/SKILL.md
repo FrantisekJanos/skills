@@ -23,7 +23,7 @@ Skript `scripts/cache_history.py` projde lokální přepisy Claude Code (`~/.cla
 ## Co výstup znamená
 
 - **První věta** je hlavní výsledek: kolik procent útraty šlo na obnovu vypršelé cache, zvlášť hlavní agent a subagenti.
-- **Kam šla útrata**: tabulka, jejíž řádky dávají dohromady 100 %. Útrata = tokeny × cena podle druhu (vůči běžnému vstupu téhož modelu): čtení z cache 0,05 u Opus, 0,1 u ostatních; zápis do cache 1,25 (5 min) nebo 2 (1 h); výstup 5.
+- **Kam šla útrata**: tabulka všech tokenů (vstup, cache, výstup), jejíž řádky dávají dohromady 100 %. Sloupec *Podíl na tokenech* počítá kusy tokenů, *Podíl na útratě* jejich cenu. Útrata = tokeny × cena podle druhu (vůči běžnému vstupu téhož modelu): čtení z cache 0,05 u Opus, 0,1 u ostatních; zápis do cache 1,25 (5 min) nebo 2 (1 h); výstup 5.
   - *Čtení z cache*: kontext, který model dostává při každém tahu znovu a který byl v cache. Velký podíl je dobrý stav, protože bez cache by stál 10–20× víc.
   - *Zápis nového kontextu*: nové zprávy a výstupy nástrojů. Nevyhnutelné.
   - *Obnova vypršelé cache*: cache vypršela a stejný kontext se zaplatil znovu jako zápis. To je ztráta, kterou jde ovlivnit.

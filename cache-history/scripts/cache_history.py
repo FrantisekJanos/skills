@@ -175,16 +175,19 @@ print(f"Hlavních sessions {n_streams['main']}, subagentů {n_streams['sub']}, "
       f"volání modelu {total_calls:,}".replace(",", " ").replace("  ", ", ") + f". Subagenti udělali {p(sub_share)} útraty.\n")
 
 print("### Kam šla útrata\n")
-print("| Položka | Tokenů | Podíl na útratě | z toho hlavní agent | z toho subagenti |")
-print("|---|---|---|---|---|")
+TT = sum(tok.values())
+pt = lambda x: f"{x / TT * 100:.1f} %".replace(".", ",") if TT else "0 %"
+print("| Položka | Tokenů | Podíl na tokenech | Podíl na útratě | z toho hlavní agent | z toho subagenti |")
+print("|---|---|---|---|---|---|")
 for item, label in ITEMS:
     t_ = tok[(item, "main")] + tok[(item, "sub")]
-    print(f"| {label} | {n(t_)} | {p(cost[(item, 'main')] + cost[(item, 'sub')])} | "
+    print(f"| {label} | {n(t_)} | {pt(t_)} | {p(cost[(item, 'main')] + cost[(item, 'sub')])} | "
           f"{p(cost[(item, 'main')])} | {p(cost[(item, 'sub')])} |")
-print(f"| **Celkem** | | **100 %** | {p(T - sub_share)} | {p(sub_share)} |\n")
-print("Útrata = tokeny × cena podle druhu, vůči běžnému vstupu: čtení z cache 0,05 (Opus) "
+print(f"| **Celkem** | {n(TT)} | **100 %** | **100 %** | {p(T - sub_share)} | {p(sub_share)} |\n")
+print("Tabulka zahrnuje všechny tokeny (vstup, cache i výstup). *Podíl na tokenech* počítá kusy, "
+      "*podíl na útratě* tokeny × cena podle druhu, vůči běžnému vstupu: čtení z cache 0,05 (Opus) "
       "nebo 0,1 (ostatní), zápis do cache 1,25 (5 min) nebo 2 (1 h), výstup 5. "
-      "Vysoký podíl čtení z cache je dobrý stav.\n")
+      "Čtení z cache je většina tokenů, ale stojí málo; vysoký podíl je dobrý stav.\n")
 
 print("### Výpadky cache\n")
 ms, mm = miss["sub"], miss["main"]
