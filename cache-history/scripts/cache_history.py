@@ -1,6 +1,8 @@
 """Hospodaření s prompt cache v Claude Code podle lokálních přepisů (~/.claude/projects).
 
-Použití: python -I cache_history.py [období]   (výchozí 30 = dní; "6h" = hodin)
+Použití: python -I cache_history.py [období]
+  30 = posledních 30 dní (výchozí), 6h = posledních 6 hodin,
+  15.9.-15.10.2026 nebo 2026-09-15..2026-10-15 = období od–do (konec včetně celého dne)
 Čte jen lokální soubory, nic neposílá. Vypíše přehled v Markdownu:
 kolik útraty padlo na obnovu vypršelé cache (hlavní agent a subagenti) a kam šel zbytek.
 """
@@ -13,14 +15,35 @@ except Exception:
     pass
 
 ROOT = os.path.expanduser("~/.claude/projects")
-ARG = sys.argv[1].strip().lower() if len(sys.argv) > 1 else "30"
-if ARG.endswith("h"):
-    SPAN = timedelta(hours=float(ARG[:-1].replace(",", ".")))
-    LABEL = f"{ARG[:-1]} h"
+ARG = "".join(sys.argv[1:]).replace(" ", "").lower() if len(sys.argv) > 1 else "30"
+NOW = datetime.now(timezone.utc)
+UNTIL = NOW
+LOCAL = NOW.astimezone().tzinfo
+
+
+def parse_day(s, year=None):
+    """2026-09-15, 15.9.2026 nebo 15.9. (rok doplní year / letošní)."""
+    if "-" in s:
+        return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=LOCAL)
+    parts = [x for x in s.split(".") if x]
+    y = int(parts[2]) if len(parts) > 2 else (year or NOW.year)
+    return datetime(y, int(parts[1]), int(parts[0]), tzinfo=LOCAL)
+
+
+if ".." in ARG or ARG.count(".") >= 2:
+    # Období od–do: "2026-09-15..2026-10-15" nebo "15.9.-15.10.2026"; konec včetně celého dne.
+    a, b = ARG.split("..") if ".." in ARG else ARG.split("-", 1)
+    end = parse_day(b)
+    start = parse_day(a, end.year)
+    SINCE, UNTIL = start, end + timedelta(days=1)
+    LABEL = f"{start.day}. {start.month}. {start.year} – {end.day}. {end.month}. {end.year}"
+    LABEL_PREFIX = "Prompt cache za období"
+elif ARG.endswith("h"):
+    SINCE = NOW - timedelta(hours=float(ARG[:-1].replace(",", ".")))
+    LABEL, LABEL_PREFIX = f"{ARG[:-1]} h", "Prompt cache za posledních"
 else:
-    SPAN = timedelta(days=float(ARG.rstrip("d").replace(",", ".")))
-    LABEL = f"{ARG.rstrip('d')} dní"
-SINCE = datetime.now(timezone.utc) - SPAN
+    SINCE = NOW - timedelta(days=float(ARG.rstrip("d").replace(",", ".")))
+    LABEL, LABEL_PREFIX = f"{ARG.rstrip('d')} dní", "Prompt cache za posledních"
 
 # Ceny vůči ceně běžného vstupu téhož modelu (ceník API).
 W_INP, W_W5, W_W1, W_OUT = 1.0, 1.25, 2.0, 5.0
@@ -54,7 +77,7 @@ for f in glob.glob(os.path.join(ROOT, "**", "*.jsonl"), recursive=True):
             if not u or d.get("type") != "assistant" or not d.get("timestamp"):
                 continue
             t = ts(d["timestamp"])
-            if t < SINCE:
+            if t < SINCE or t >= UNTIL:
                 continue
             cc = u.get("cache_creation") or {}
             w1 = cc.get("ephemeral_1h_input_tokens", 0) or 0
@@ -69,7 +92,7 @@ for f in glob.glob(os.path.join(ROOT, "**", "*.jsonl"), recursive=True):
         streams.append((kind, sorted(calls.values(), key=lambda c: c["t"])))
 
 if not streams:
-    print(f"V {ROOT} nejsou za posledních {LABEL} žádné přepisy s údaji o tokenech.")
+    print(f"V {ROOT} nejsou ({LABEL}) žádné přepisy s údaji o tokenech.")
     sys.exit(0)
 
 # Útrata po položkách: cost[(položka, kind)], tokeny tok[(položka, kind)]
@@ -145,7 +168,7 @@ renew = cost[("renew", "main")] + cost[("renew", "sub")]
 sub_share = sum(cost[(i, "sub")] for i, _ in ITEMS)
 total_calls = n_calls["main"] + n_calls["sub"]
 
-print(f"## Prompt cache za posledních {LABEL}\n")
+print(f"## {LABEL_PREFIX} {LABEL}\n")
 print(f"**Obnova vypršelé cache: {p(renew)} útraty** "
       f"(hlavní agent {p(cost[('renew', 'main')])}, subagenti {p(cost[('renew', 'sub')])}).\n")
 print(f"Hlavních sessions {n_streams['main']}, subagentů {n_streams['sub']}, "
